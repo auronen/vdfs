@@ -67,7 +67,6 @@ impl Default for VDFSHeader {
 fn get_current_dos_time() -> u32 {
     let mut time: u32 = 0;
     let curr = chrono::Utc::now();
-    println!(" {}", curr.year());
     time |= ((curr.year() - 1980) as u32) << 25;
     time |= ((curr.month0() + 1) as u32) << 21;
     time |= (curr.day() as u32) << 16;
@@ -87,7 +86,7 @@ enum EntryType {
 #[derive(Debug)]
 pub struct VDFSCatalogEntry {
     name: [u8; 64],
-    offset: u32,
+    next_index: u32,
     size: u32,
     typ: u32,
     attributes: u32,
@@ -111,7 +110,7 @@ impl fmt::Display for VDFSCatalogEntry {
         let name = String::from_utf8_lossy(&self.name);
 
         writeln!(f, "Name: {}", name)?;
-        writeln!(f, "Offset: {}", self.offset)?;
+        writeln!(f, "Offset: {}", self.next_index)?;
         writeln!(f, "Size: {}", self.size)?;
         writeln!(f, "Type: {}", self.typ)?;
         // writeln!(f, "Attributes: {}", self.attributes)?;
@@ -130,7 +129,7 @@ impl Default for VDFSCatalogEntry {
                 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
                 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
             ],
-            offset: 0,
+            next_index: 0,
             size: 0,
             typ: 0,
             attributes: 0,
@@ -179,6 +178,7 @@ impl VDFS {
         vdfs
     }
 
+    // This could be done elegantly with serde, but I don't know how to use it :kekw:
     pub fn save_to_file(&self, output_file: &PathBuf) -> Result<(), std::io::Error> {
         let file = File::create(output_file)?;
 
@@ -195,7 +195,7 @@ impl VDFS {
 
         for c in &self.catalog {
             buf_writer.write(&c.name)?;
-            buf_writer.write(&c.offset.to_le_bytes())?;
+            buf_writer.write(&c.next_index.to_le_bytes())?;
             buf_writer.write(&c.size.to_le_bytes())?;
             buf_writer.write(&c.typ.to_le_bytes())?;
             buf_writer.write(&c.attributes.to_le_bytes())?;
@@ -203,7 +203,7 @@ impl VDFS {
 
         for f in &self.files {
             buf_writer.write(&f.name)?;
-            buf_writer.write(&f.offset.to_le_bytes())?;
+            buf_writer.write(&f.next_index.to_le_bytes())?;
             buf_writer.write(&f.size.to_le_bytes())?;
             buf_writer.write(&f.typ.to_le_bytes())?;
             buf_writer.write(&f.attributes.to_le_bytes())?;
@@ -220,13 +220,15 @@ impl VDFS {
         let mut dir_queue = VecDeque::new();
         dir_queue.push_back((1, base_dir.to_owned())); // Add the root directory to the queue
 
-        let mut offset = 1;
-        while let Some((i, dir_path)) = dir_queue.pop_front() {
+        let mut offset = 0;
+        while let Some((level, dir_path)) = dir_queue.pop_front() {
             match fs::read_dir(&dir_path) {
                 Ok(entries) => {
                     let mut paths: Vec<_> = entries.collect();
 
-                    paths.sort_by_key(|dir| dir.as_ref().unwrap().path().is_dir());
+                    paths.sort_by_key(|dir| !dir.as_ref().unwrap().path().is_dir()); // Sort = dirs then files
+
+                    // Last index for the directory portion
                     let mut last_dir_index = 0;
                     if let Some(index) = paths
                         .iter()
@@ -234,6 +236,7 @@ impl VDFS {
                     {
                         last_dir_index = index;
                     }
+
                     for (entry_index, entry) in paths.iter().enumerate() {
                         if let Ok(entry) = entry {
                             let path = entry.path();
@@ -243,9 +246,10 @@ impl VDFS {
                                 let mut e =
                                     VDFSCatalogEntry::new(entry.file_name().to_str().unwrap());
 
-                                e.offset = offset;
+                                e.next_index = offset + last_dir_index as u32 + 1;
                                 e.typ |= EntryType::Dir as u32;
-                                if entry_index == last_dir_index {
+                                if entry_index == paths.len() - 1 {
+                                    // last_dir_index {
                                     e.typ |= EntryType::LastFile as u32;
                                 }
                                 self.catalog.push(e);
@@ -255,7 +259,7 @@ impl VDFS {
                                     entry.file_name().to_str().unwrap(),
                                     entry.metadata().unwrap().len(),
                                 );
-                                e.offset = i; //offset ;
+                                e.next_index = level; //offset ;
                                 if entry_index == paths.len() - 1 {
                                     e.typ = EntryType::LastFile as u32;
                                 }
@@ -284,15 +288,17 @@ impl VDFS {
 
         let mut last_offset = 0;
         for (i, f) in self.files.iter_mut().enumerate() {
-            if last_offset != f.offset {
-                last_offset = f.offset;
-                let num_entry = self.catalog.len() as u32 + i as u32;
-                if let Some(o) = self.catalog.get_mut((f.offset - 1) as usize) {
-                    o.offset = num_entry;
+            if last_offset != f.next_index {
+                last_offset = f.next_index;
+                if f.next_index != 0 {
+                    let num_entry = self.catalog.len() as u32 + i as u32;
+                    if let Some(o) = self.catalog.get_mut((f.next_index) as usize) {
+                        o.next_index = num_entry;
+                    }
                 }
             }
             //                               length of the file entries
-            f.offset =
+            f.next_index =
                 self.header.catalog_offset + self.header.num_files * 80 + self.curr_pos as u32;
             self.curr_pos += f.size;
         }

@@ -16,13 +16,13 @@ struct Args {
 
     /// Comment to be added to the volume
     #[arg(short = 'c', long)]
-    comment: String,
+    comment: Option<String>,
 }
 
 fn main() -> Result<(), std::io::Error> {
     let args = Args::parse();
     let mut vdfs = VDFS::new(&args.base_directory);
-    vdfs.comment(&args.comment);
+    vdfs.comment(if let Some(c) = &args.comment { c } else { "" });
     vdfs.save_to_file(&args.output_file)?;
     Ok(())
 }
