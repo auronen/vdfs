@@ -7,7 +7,10 @@ use std::{
     process::exit,
 };
 
+mod filetree;
 use chrono::{Datelike, Timelike};
+
+use self::filetree::FileSystemNode;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -140,6 +143,7 @@ impl Default for VDFSCatalogEntry {
 #[derive(Debug)]
 pub struct VDFS {
     pub header: VDFSHeader,
+    pub fs: Option<FileSystemNode>,
     pub catalog: Vec<VDFSCatalogEntry>,
     files: Vec<VDFSCatalogEntry>,
     pub data: Vec<u8>,
@@ -167,6 +171,7 @@ impl VDFS {
     pub fn new(path: &PathBuf) -> Self {
         let mut vdfs = VDFS {
             header: VDFSHeader::default(),
+            fs: None,
             catalog: Vec::new(),
             files: Vec::new(),
             data: Vec::new(),
@@ -224,7 +229,7 @@ impl VDFS {
         while let Some((level, dir_path)) = dir_queue.pop_front() {
             match fs::read_dir(&dir_path) {
                 Ok(entries) => {
-                    let mut paths: Vec<_> = entries.collect();
+                    let mut paths: Vec<_> = entries.filter(|f| !f.as_ref().unwrap().file_name().eq(".DS_Store")).collect();
 
                     paths.sort_by_key(|dir| !dir.as_ref().unwrap().path().is_dir()); // Sort = dirs then files
 
@@ -240,6 +245,8 @@ impl VDFS {
                     for (entry_index, entry) in paths.iter().enumerate() {
                         if let Ok(entry) = entry {
                             let path = entry.path();
+
+                            println!("path: {}", path.strip_prefix(PathBuf::from(base_dir)).unwrap().display());
 
                             if path.is_dir() {
                                 dir_queue.push_back((offset, path.to_string_lossy().to_string()));
