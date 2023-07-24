@@ -229,7 +229,7 @@ impl VDFS {
         while let Some((level, dir_path)) = dir_queue.pop_front() {
             match fs::read_dir(&dir_path) {
                 Ok(entries) => {
-                    let mut paths: Vec<_> = entries.filter(|f| !f.as_ref().unwrap().file_name().eq(".DS_Store")).collect();
+                    let mut paths: Vec<_> = entries.filter(|f| !f.as_ref().unwrap().file_name().to_str().unwrap().starts_with(".") ).collect();
 
                     paths.sort_by_key(|dir| !dir.as_ref().unwrap().path().is_dir()); // Sort = dirs then files
 
