@@ -1,16 +1,22 @@
+use anyhow::Result;
+use chrono::{Datelike, Timelike};
 use core::fmt;
+use glob::{glob_with, MatchOptions};
 use std::{
     collections::VecDeque,
-    fs::{self, File},
+    fs::{self, read_to_string, File},
     io::{BufWriter, Write},
     path::PathBuf,
     process::exit,
+    time::Instant,
 };
 
 mod filetree;
-use chrono::{Datelike, Timelike};
+pub mod script;
 
-use self::filetree::FileSystemNode;
+use crate::vdfs::{filetree::build_file_system_tree_filtered, script::VdfsScript};
+
+use self::filetree::{build_file_system_tree, FileSystemNode};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -71,11 +77,11 @@ fn get_current_dos_time() -> u32 {
     let mut time: u32 = 0;
     let curr = chrono::Utc::now();
     time |= ((curr.year() - 1980) as u32) << 25;
-    time |= ((curr.month0() + 1) as u32) << 21;
-    time |= (curr.day() as u32) << 16;
-    time |= (curr.hour() as u32) << 11;
-    time |= (curr.minute() as u32) << 5;
-    time |= ((curr.second() / 2) as u32) << 0;
+    time |= (curr.month0() + 1) << 21;
+    time |= curr.day() << 16;
+    time |= curr.hour() << 11;
+    time |= curr.minute() << 5;
+    time |= curr.second() / 2;
 
     time
 }
@@ -88,21 +94,27 @@ enum EntryType {
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct VDFSCatalogEntry {
+    name_utf8: String,
     name: [u8; 64],
     next_index: u32,
     size: u32,
     typ: u32,
     attributes: u32,
+
+    parent_id: i32,
+    is_dir: bool,
 }
 impl VDFSCatalogEntry {
     fn new(file_name: &str) -> VDFSCatalogEntry {
         let mut vdfs = VDFSCatalogEntry::default();
         vdfs.name[..file_name.len()].copy_from_slice(file_name.to_ascii_uppercase().as_bytes());
+        vdfs.name_utf8 = file_name.to_string();
         vdfs
     }
     fn new_sized(file_name: &str, size: u64) -> VDFSCatalogEntry {
         let mut vdfs = VDFSCatalogEntry::default();
         vdfs.name[..file_name.len()].copy_from_slice(file_name.to_ascii_uppercase().as_bytes());
+        vdfs.name_utf8 = file_name.to_string();
         vdfs.size = size as u32;
         vdfs
     }
@@ -115,8 +127,10 @@ impl fmt::Display for VDFSCatalogEntry {
         writeln!(f, "Name: {}", name)?;
         writeln!(f, "Offset: {}", self.next_index)?;
         writeln!(f, "Size: {}", self.size)?;
+
+        writeln!(f, "par_id: {}", self.parent_id)?;
+
         writeln!(f, "Type: {}", self.typ)?;
-        // writeln!(f, "Attributes: {}", self.attributes)?;
 
         Ok(())
     }
@@ -125,197 +139,378 @@ impl fmt::Display for VDFSCatalogEntry {
 impl Default for VDFSCatalogEntry {
     fn default() -> Self {
         VDFSCatalogEntry {
-            name: [
-                0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-                0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-                0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-                0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-                0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-            ],
+            name_utf8: String::new(),
+            name: [0x20; 64],
             next_index: 0,
             size: 0,
             typ: 0,
             attributes: 0,
+
+            parent_id: 0,
+            is_dir: false,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct VDFS {
+pub struct Vdfs {
     pub header: VDFSHeader,
-    pub fs: Option<FileSystemNode>,
-    pub catalog: Vec<VDFSCatalogEntry>,
-    files: Vec<VDFSCatalogEntry>,
+    pub fs: FileSystemNode,
+
+    pub catalog_dirs: Vec<VDFSCatalogEntry>,
     pub data: Vec<u8>,
     pub curr_pos: u32,
 }
 
-impl fmt::Display for VDFS {
+impl fmt::Display for Vdfs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "VDFS Header:")?;
         writeln!(f, "{}", self.header)?;
 
         writeln!(f, "VDFS Catalog:")?;
-        for (i, entry) in self.catalog.iter().enumerate() {
+        for (i, entry) in self.catalog_dirs.iter().enumerate() {
             writeln!(f, "{i}\n{}\n", entry)?;
-        }
-        for (i, entry) in self.files.iter().enumerate() {
-            writeln!(f, "{}\n{}\n", i + self.catalog.len(), entry)?;
         }
 
         Ok(())
     }
 }
 
-impl VDFS {
-    pub fn new(path: &PathBuf) -> Self {
-        let mut vdfs = VDFS {
+impl Vdfs {
+    pub fn from_dir(path: &mut PathBuf) -> Self {
+        let mut vdfs = Vdfs {
             header: VDFSHeader::default(),
-            fs: None,
-            catalog: Vec::new(),
-            files: Vec::new(),
+            fs: build_file_system_tree(path, -1),
+            catalog_dirs: Vec::new(),
             data: Vec::new(),
             curr_pos: 0,
         };
 
-        vdfs.build_catalog(&path.to_string_lossy().into_owned());
+        vdfs.build_catalog();
+        // bfs(&vdfs.fs);
         vdfs.calculate_data_size();
         vdfs
     }
 
+    pub fn from_script(
+        path: &PathBuf,
+        base_dir_override: &Option<PathBuf>,
+        output_file_override: &Option<PathBuf>,
+        comment_override: &Option<String>,
+    ) -> Result<()> {
+        let time = Instant::now();
+        println!("[INFO] Generating archive: {}", path.display());
+        let yml_file = read_to_string(path).unwrap();
+        let script = VdfsScript::from_yaml(&yml_file).unwrap();
+
+        // println!("{:#?}", script);
+
+        if script.base_dir.as_os_str().is_empty() && base_dir_override.is_none() {
+            println!(
+                "[ERROR] Empty base directory path in script file and no override was provided."
+            );
+            exit(1)
+        } else if script.file_path.as_os_str().is_empty() && output_file_override.is_none() {
+            println!("[ERROR] Empty output path in script file and no override was provided.");
+            exit(1)
+        }
+
+        let path_filter_globs: Vec<_> = script
+            .file_include_globs
+            .iter()
+            .flat_map(|g| {
+                let glb = format!(
+                    "{}/{}",
+                    case_insensitive_globify(&match base_dir_override {
+                        Some(pb) => pb.to_string_lossy(),
+                        None => script.base_dir.to_string_lossy(),
+                    }),
+                    case_insensitive_globify(g)
+                );
+                // println!("glob: {}", glb);
+                glob_with(
+                    &glb,
+                    MatchOptions {
+                        case_sensitive: false,
+                        require_literal_separator: false,
+                        require_literal_leading_dot: false,
+                    },
+                )
+            })
+            .collect();
+
+        let mut path_filter: Vec<Vec<String>> = Vec::new();
+        // println!("{:#?}", path_filter);
+
+        for paths in path_filter_globs {
+            for p in paths {
+                if let Ok(path) = p {
+                    path_filter.push({
+                        let pth = path
+                            .strip_prefix(match base_dir_override {
+                                Some(pb) => {
+                                    // let mut pb = pb.clone();
+                                    // pb.pop();
+                                    pb
+                                }
+                                None => {
+                                    // let mut bd = script.base_dir.clone();
+                                    // bd.pop();
+                                    // bd
+                                    &script.base_dir
+                                }
+                            })
+                            .unwrap();
+                        pth.iter()
+                            .map(|component| component.to_string_lossy().to_string())
+                            .collect()
+                    });
+                }
+            }
+        }
+
+        let mut vdfs = Vdfs {
+            header: VDFSHeader::default(),
+            fs: build_file_system_tree_filtered(
+                match base_dir_override {
+                    Some(pb) => pb,
+                    None => &script.base_dir,
+                },
+                -1,
+                &path_filter,
+            ),
+            catalog_dirs: Vec::new(),
+            data: Vec::new(),
+            curr_pos: 0,
+        };
+        // println!("-------");
+        // bfs(&vdfs.fs);
+        // println!("-------");
+        // println!("{:#?}", path_filter);
+
+        vdfs.build_catalog();
+
+        // bfs(&vdfs.fs);
+        // println!("{}", vdfs);
+        vdfs.calculate_data_size();
+        println!("[INFO] Done: {:.2?}", time.elapsed());
+        vdfs.add_comment(match comment_override {
+            Some(s) => Some(s),
+            None => Some(script.comment),
+        })
+        .save_to_file(match output_file_override {
+            Some(o) => o,
+            None => &script.file_path,
+        })?;
+        Ok(())
+    }
+
+    fn build_catalog(&mut self) {
+        let mut queue = VecDeque::new();
+        queue.push_back((-1, &self.fs));
+
+        let mut index = -1;
+        while !queue.is_empty() {
+            let (par, node) = queue.pop_front().unwrap();
+
+            match node {
+                FileSystemNode::Directory {
+                    name,
+                    path: _,
+                    is_last,
+                    children,
+                    level: _,
+                } => {
+                    if node != &self.fs {
+                        let mut e = VDFSCatalogEntry::new(name);
+                        e.is_dir = true;
+                        e.typ |= EntryType::Dir as u32;
+                        if *is_last {
+                            e.typ |= EntryType::LastFile as u32;
+                        }
+                        e.parent_id = par;
+
+                        self.catalog_dirs.push(e);
+                        for child in children {
+                            queue.push_back((index, child));
+                        }
+                    } else {
+                        for child in children {
+                            queue.push_back((index, child));
+                        }
+                    }
+                }
+                FileSystemNode::File {
+                    name,
+                    path,
+                    is_last,
+                    level: _,
+                } => {
+                    let mut e = VDFSCatalogEntry::new_sized(
+                        name,
+                        match fs::metadata(path) {
+                            Ok(m) => m.len(),
+                            Err(e) => {
+                                eprintln!("ERROR: {}", e);
+                                exit(420);
+                            }
+                        },
+                    );
+                    e.is_dir = false;
+                    e.parent_id = par;
+
+                    if *is_last {
+                        e.typ = EntryType::LastFile as u32;
+                    }
+                    self.catalog_dirs.push(e);
+                    match fs::read(path) {
+                        Ok(mut d) => self.data.append(&mut d),
+                        Err(e) => {
+                            eprintln!("ERROR: {}", e);
+                            exit(69);
+                        }
+                    }
+                }
+            }
+            index += 1;
+        }
+
+        let mut queue = VecDeque::new();
+        queue.push_back(&self.fs);
+
+        let mut i = -1;
+        while !queue.is_empty() {
+            let node = queue.pop_front().unwrap();
+
+            match node {
+                FileSystemNode::Directory {
+                    name: _,
+                    path: _,
+                    children,
+                    is_last: _,
+                    level: _,
+                } => {
+                    if node != &self.fs {
+                        let _id = self.find_index(i as u32);
+                        self.catalog_dirs[i as usize].next_index = _id;
+
+                        for child in children {
+                            queue.push_back(child);
+                        }
+                    } else {
+                        for child in children {
+                            queue.push_back(child);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        let final_num = self.catalog_dirs.len(); // + self.catalog_files.len();
+        self.header.catalog_offset = 296_u32;
+        self.header.num_files = final_num as u32;
+        self.header.num_entries = self
+            .catalog_dirs
+            .iter()
+            .filter(|f| f.typ == 0 || f.typ == EntryType::LastFile as u32)
+            .count() as u32; // self.catalog_files.len() as u32;
+
+        self.catalog_dirs
+            .iter_mut()
+            .filter(|f| f.typ == 0 || f.typ == EntryType::LastFile as u32)
+            .for_each(|f| {
+                f.next_index =
+                    self.header.catalog_offset + self.header.num_files * 80 + self.curr_pos;
+                self.curr_pos += f.size;
+            });
+    }
+
+    fn find_index(&self, level: u32) -> u32 {
+        match self
+            .catalog_dirs
+            .iter()
+            .position(|item| item.parent_id as u32 == level)
+        {
+            Some(i) => i as u32,
+            None => 0_u32,
+        }
+    }
+
     // This could be done elegantly with serde, but I don't know how to use it :kekw:
     pub fn save_to_file(&self, output_file: &PathBuf) -> Result<(), std::io::Error> {
+        let time = Instant::now();
+        println!("[INFO] Writing {}", output_file.display());
         let file = File::create(output_file)?;
 
         let mut buf_writer = BufWriter::new(file);
 
-        buf_writer.write(&self.header.comment)?;
-        buf_writer.write(&self.header.signature)?;
-        buf_writer.write(&self.header.num_files.to_le_bytes())?;
-        buf_writer.write(&self.header.num_entries.to_le_bytes())?;
-        buf_writer.write(&self.header.timestamp.to_le_bytes())?;
-        buf_writer.write(&self.header.size.to_le_bytes())?;
-        buf_writer.write(&self.header.catalog_offset.to_le_bytes())?;
-        buf_writer.write(&self.header.version.to_le_bytes())?;
+        buf_writer.write_all(&self.header.comment)?;
+        buf_writer.write_all(&self.header.signature)?;
+        buf_writer.write_all(&self.header.num_files.to_le_bytes())?;
+        buf_writer.write_all(&self.header.num_entries.to_le_bytes())?;
+        buf_writer.write_all(&self.header.timestamp.to_le_bytes())?;
+        buf_writer.write_all(&self.header.size.to_le_bytes())?;
+        buf_writer.write_all(&self.header.catalog_offset.to_le_bytes())?;
+        buf_writer.write_all(&self.header.version.to_le_bytes())?;
 
-        for c in &self.catalog {
-            buf_writer.write(&c.name)?;
-            buf_writer.write(&c.next_index.to_le_bytes())?;
-            buf_writer.write(&c.size.to_le_bytes())?;
-            buf_writer.write(&c.typ.to_le_bytes())?;
-            buf_writer.write(&c.attributes.to_le_bytes())?;
+        for c in &self.catalog_dirs {
+            buf_writer.write_all(&c.name)?;
+            buf_writer.write_all(&c.next_index.to_le_bytes())?;
+            buf_writer.write_all(&c.size.to_le_bytes())?;
+            buf_writer.write_all(&c.typ.to_le_bytes())?;
+            buf_writer.write_all(&c.attributes.to_le_bytes())?;
         }
 
-        for f in &self.files {
-            buf_writer.write(&f.name)?;
-            buf_writer.write(&f.next_index.to_le_bytes())?;
-            buf_writer.write(&f.size.to_le_bytes())?;
-            buf_writer.write(&f.typ.to_le_bytes())?;
-            buf_writer.write(&f.attributes.to_le_bytes())?;
-        }
-
-        buf_writer.write(&self.data)?;
+        buf_writer.write_all(&self.data)?;
 
         buf_writer.flush()?;
-
+        println!("[INFO] Done: {:.2?}", time.elapsed());
         Ok(())
     }
 
-    pub fn build_catalog(&mut self, base_dir: &str) {
-        let mut dir_queue = VecDeque::new();
-        dir_queue.push_back((1, base_dir.to_owned())); // Add the root directory to the queue
-
-        let mut offset = 0;
-        while let Some((level, dir_path)) = dir_queue.pop_front() {
-            match fs::read_dir(&dir_path) {
-                Ok(entries) => {
-                    let mut paths: Vec<_> = entries.filter(|f| !f.as_ref().unwrap().file_name().to_str().unwrap().starts_with(".") ).collect();
-
-                    paths.sort_by_key(|dir| !dir.as_ref().unwrap().path().is_dir()); // Sort = dirs then files
-
-                    // Last index for the directory portion
-                    let mut last_dir_index = 0;
-                    if let Some(index) = paths
-                        .iter()
-                        .rposition(|entry| entry.as_ref().unwrap().path().is_dir())
-                    {
-                        last_dir_index = index;
-                    }
-
-                    for (entry_index, entry) in paths.iter().enumerate() {
-                        if let Ok(entry) = entry {
-                            let path = entry.path();
-
-                            println!("path: {}", path.strip_prefix(PathBuf::from(base_dir)).unwrap().display());
-
-                            if path.is_dir() {
-                                dir_queue.push_back((offset, path.to_string_lossy().to_string()));
-                                let mut e =
-                                    VDFSCatalogEntry::new(entry.file_name().to_str().unwrap());
-
-                                e.next_index = offset + last_dir_index as u32 + 1;
-                                e.typ |= EntryType::Dir as u32;
-                                if entry_index == paths.len() - 1 {
-                                    // last_dir_index {
-                                    e.typ |= EntryType::LastFile as u32;
-                                }
-                                self.catalog.push(e);
-                                offset += 1;
-                            } else {
-                                let mut e = VDFSCatalogEntry::new_sized(
-                                    entry.file_name().to_str().unwrap(),
-                                    entry.metadata().unwrap().len(),
-                                );
-                                e.next_index = level; //offset ;
-                                if entry_index == paths.len() - 1 {
-                                    e.typ = EntryType::LastFile as u32;
-                                }
-                                self.files.push(e);
-                                match fs::read(&path) {
-                                    Ok(mut d) => self.data.append(&mut d),
-                                    Err(e) => {
-                                        eprintln!("ERROR: {}", e);
-                                        exit(69);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    eprintln!("Error reading directory: {}", err);
-                }
-            }
-        }
-
-        let final_num = self.catalog.len() + self.files.len();
-        self.header.catalog_offset = 296 as u32;
-        self.header.num_files = final_num as u32;
-        self.header.num_entries = self.files.len() as u32;
-
-        let mut last_offset = 0;
-        for (i, f) in self.files.iter_mut().enumerate() {
-            if last_offset != f.next_index {
-                last_offset = f.next_index;
-                if f.next_index != 0 {
-                    let num_entry = self.catalog.len() as u32 + i as u32;
-                    if let Some(o) = self.catalog.get_mut((f.next_index) as usize) {
-                        o.next_index = num_entry;
-                    }
-                }
-            }
-            //                               length of the file entries
-            f.next_index =
-                self.header.catalog_offset + self.header.num_files * 80 + self.curr_pos as u32;
-            self.curr_pos += f.size;
-        }
-    }
-
     fn calculate_data_size(&mut self) {
-        self.header.size = self.files.iter().map(|entry| entry.size).sum();
+        self.header.size = self.catalog_dirs.iter().map(|entry| entry.size).sum();
     }
 
-    pub fn comment(&mut self, cmnt: &str) {
-        self.header.comment(cmnt);
+    pub fn add_comment(mut self, cmnt: Option<&str>) -> Self {
+        self.header.comment(match cmnt {
+            Some(c) => c,
+            None => "",
+        });
+        self
     }
+
+    // pub fn set_comment(&mut self, cmnt: &str) {
+    //     self.header.comment(cmnt);
+    // }
+}
+
+fn is_on_level(filters: &Vec<Vec<String>>, search_term: &str, level: i32) -> bool {
+    if level == -1 {
+        return true;
+    }
+    for filter in filters {
+        if filter.len() > level as usize && filter[level as usize].eq_ignore_ascii_case(search_term)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn case_insensitive_globify(input: &str) -> String {
+    let mut s = String::new();
+    for c in input.chars() {
+        if c.is_alphabetic() {
+            s.push('[');
+            s.push(c.to_ascii_lowercase());
+            s.push(c.to_ascii_uppercase());
+            s.push(']');
+        } else {
+            s.push(c);
+        }
+    }
+    s
 }
