@@ -1,8 +1,10 @@
-use std::{path::PathBuf, process::exit};
+use std::{path::PathBuf, process::exit, io, borrow::Cow};
+
+use ptree::{TreeItem, Style};
 
 use super::is_on_level;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum FileSystemNode {
     Directory {
         name: String,
@@ -19,6 +21,33 @@ pub enum FileSystemNode {
         is_last: bool,
         level: i32,
     },
+}
+
+trait Name {
+    fn name(&self) -> &str;
+}
+
+impl Name for FileSystemNode {
+    fn name(&self) -> &str {
+        match self {
+            FileSystemNode::Directory { name, .. } => name,
+            FileSystemNode::File { name, .. } => name,
+        }
+    }
+}
+
+impl TreeItem for FileSystemNode {
+    type Child = Self;
+    fn write_self<W: io::Write>(&self, f: &mut W, style: &Style) -> io::Result<()> {
+        write!(f, "{}", style.paint(self.name()))
+    }
+    fn children(&self) -> Cow<[Self::Child]> {
+        match self {
+            FileSystemNode::Directory { children, .. } => Cow::from(children),
+            FileSystemNode::File { .. } =>  Cow::from(vec![]),
+        }
+
+    }
 }
 
 impl FileSystemNode {
