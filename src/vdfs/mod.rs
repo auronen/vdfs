@@ -51,7 +51,12 @@ impl fmt::Display for VDFSHeader {
 
 impl VDFSHeader {
     fn comment(&mut self, cmnt: &str) {
-        self.comment[..cmnt.len()].copy_from_slice(cmnt.as_bytes());
+        let len = cmnt.len();
+        if len > 256 {
+            self.comment[..256].copy_from_slice(cmnt[0..256].as_bytes());
+        } else {
+            self.comment[..cmnt.len()].copy_from_slice(cmnt.as_bytes());
+        }
     }
 }
 
@@ -117,6 +122,14 @@ impl VDFSCatalogEntry {
         vdfs.name_utf8 = file_name.to_string();
         vdfs.size = size as u32;
         vdfs
+    }
+
+    fn is_dir(&self) -> bool {
+        (self.typ & EntryType::Dir as u32) != 0
+    }
+
+    fn is_last(&self) -> bool {
+        (self.typ & EntryType::LastFile as u32) != 0
     }
 }
 

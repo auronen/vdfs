@@ -1,8 +1,9 @@
-use std::{path::PathBuf, process::exit, io, borrow::Cow};
+use std::{borrow::Cow, io, path::PathBuf, process::exit};
 
-use ptree::{TreeItem, Style};
+use ptree::{Style, TreeItem};
+use walkdir::WalkDir;
 
-use super::is_on_level;
+use super::{is_on_level, VDFSCatalogEntry};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum FileSystemNode {
@@ -44,9 +45,8 @@ impl TreeItem for FileSystemNode {
     fn children(&self) -> Cow<[Self::Child]> {
         match self {
             FileSystemNode::Directory { children, .. } => Cow::from(children),
-            FileSystemNode::File { .. } =>  Cow::from(vec![]),
+            FileSystemNode::File { .. } => Cow::from(vec![]),
         }
-
     }
 }
 
@@ -134,6 +134,12 @@ pub fn _build_file_system_tree_filtered(
         }
     } else {
         let dir_name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !WalkDir::new(path)
+            .into_iter()
+            .any(|entry| entry.unwrap().file_type().is_file())
+        {
+            return None;
+        }
         if is_on_level(filter, &dir_name, lvl) {
             let mut children = Vec::new();
 
@@ -174,13 +180,14 @@ pub fn _build_file_system_tree_filtered(
         }
     }
 }
+
 pub fn build_file_system_tree_filtered(
     path: &PathBuf,
     lvl: i32,
     filter: &Vec<Vec<String>>,
 ) -> FileSystemNode {
     if path.is_file() {
-        println!("[ERROR] You cannot add a single dile like that!");
+        println!("[ERROR] You cannot add a single file like that!");
         exit(1);
     } else {
         let dir_name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -220,30 +227,3 @@ pub fn build_file_system_tree_filtered(
         }
     }
 }
-
-// pub fn bfs(root: &FileSystemNode) {
-//     use std::collections::VecDeque;
-//     let mut queue = VecDeque::new();
-//     queue.push_back(root);
-
-//     while !queue.is_empty() {
-//         let node = queue.pop_front().unwrap();
-
-//         match node {
-//             FileSystemNode::Directory {
-//                 name,
-//                 children,
-//                 level,
-//                 ..
-//             } => {
-//                 println!("{:>15}\t({level}) g", name);
-//                 for child in children {
-//                     queue.push_back(child);
-//                 }
-//             }
-//             FileSystemNode::File { name, level, .. } => {
-//                 println!("{:>15}\t({level}) f", name);
-//             }
-//         }
-//     }
-// }
