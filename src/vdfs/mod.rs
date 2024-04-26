@@ -12,6 +12,7 @@ use std::{
 };
 
 mod filetree;
+mod parser;
 pub mod script;
 
 use crate::vdfs::{filetree::build_file_system_tree_filtered, script::VdfsScript};
@@ -102,7 +103,7 @@ pub struct VDFSCatalogEntry {
     attributes: u32,
 
     parent_id: i32,
-    is_dir: bool,
+    // is_dir: bool,
 }
 impl VDFSCatalogEntry {
     fn new(file_name: &str) -> VDFSCatalogEntry {
@@ -147,7 +148,7 @@ impl Default for VDFSCatalogEntry {
             attributes: 0,
 
             parent_id: 0,
-            is_dir: false,
+            // is_dir: false,
         }
     }
 }
@@ -323,7 +324,7 @@ impl Vdfs {
                 } => {
                     if node != &self.fs {
                         let mut e = VDFSCatalogEntry::new(name);
-                        e.is_dir = true;
+                        // e.is_dir = true;
                         e.typ |= EntryType::Dir as u32;
                         if *is_last {
                             e.typ |= EntryType::LastFile as u32;
@@ -356,7 +357,7 @@ impl Vdfs {
                             }
                         },
                     );
-                    e.is_dir = false;
+                    // e.is_dir = false;
                     e.parent_id = par;
 
                     if *is_last {

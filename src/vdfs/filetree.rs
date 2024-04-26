@@ -1,6 +1,6 @@
-use std::{path::PathBuf, process::exit, io, borrow::Cow};
+use std::{borrow::Cow, io, path::PathBuf, process::exit};
 
-use ptree::{TreeItem, Style};
+use ptree::{Style, TreeItem};
 
 use super::is_on_level;
 
@@ -44,9 +44,8 @@ impl TreeItem for FileSystemNode {
     fn children(&self) -> Cow<[Self::Child]> {
         match self {
             FileSystemNode::Directory { children, .. } => Cow::from(children),
-            FileSystemNode::File { .. } =>  Cow::from(vec![]),
+            FileSystemNode::File { .. } => Cow::from(vec![]),
         }
-
     }
 }
 
