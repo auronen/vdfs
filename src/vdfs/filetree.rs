@@ -12,6 +12,7 @@ pub enum FileSystemNode {
         path: PathBuf,
         children: Vec<FileSystemNode>,
 
+        // for building the tree from directory
         level: i32,
         is_last: bool,
     },
@@ -19,9 +20,58 @@ pub enum FileSystemNode {
         name: String,
         path: PathBuf,
 
-        is_last: bool,
+        // for reading
+        data_offset: Option<u32>,
+
+        // for building the tree from directory
         level: i32,
+        is_last: bool,
     },
+}
+
+impl FileSystemNode {
+    pub fn new_from(entries: &Vec<VDFSCatalogEntry>, name: &str) -> Self {
+        FileSystemNode::Directory {
+            name: name.to_string(),
+            path: PathBuf::default(),
+            children: FileSystemNode::generate_children(entries, 0),
+            level: -1,
+            is_last: false,
+        }
+    }
+
+    fn generate_children(
+        entries: &[VDFSCatalogEntry],
+        starting_index: usize,
+    ) -> Vec<FileSystemNode> {
+        let mut children = Vec::new();
+        for e in entries.iter().skip(starting_index) {
+            if e.is_dir() {
+                children.push(FileSystemNode::Directory {
+                    name: e.name_utf8.clone(),
+                    path: PathBuf::default(), // TODO: build a path here???
+                    children: FileSystemNode::generate_children(entries, e.next_index as usize),
+                    level: -1,
+                    is_last: e.is_last(),
+                });
+                if e.is_last() {
+                    return children;
+                }
+            } else {
+                children.push(FileSystemNode::File {
+                    name: e.name_utf8.clone(),
+                    path: PathBuf::default(), // TODO: build a path here???
+                    data_offset: Some(e.next_index),
+                    is_last: e.is_last(),
+                    level: -1,
+                });
+                if e.is_last() {
+                    return children;
+                }
+            }
+        }
+        children
+    }
 }
 
 trait Name {
@@ -76,6 +126,7 @@ pub fn build_file_system_tree(path: &PathBuf, lvl: i32) -> FileSystemNode {
         return FileSystemNode::File {
             name: path.file_name().unwrap().to_string_lossy().into_owned(),
             path: path.to_path_buf(),
+            data_offset: None,
             is_last: false,
             level: lvl,
         };
@@ -126,6 +177,7 @@ pub fn _build_file_system_tree_filtered(
             Some(FileSystemNode::File {
                 name,
                 path: path.to_path_buf(),
+                data_offset: None,
                 is_last: false,
                 level: lvl,
             })

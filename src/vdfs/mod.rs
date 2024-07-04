@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::{Datelike, Timelike};
 use core::fmt;
 use glob::{glob_with, MatchOptions};
+use ptree::print_tree;
 use std::{
     collections::VecDeque,
     fs::{self, read_to_string, File},
@@ -17,7 +18,10 @@ pub mod script;
 
 use crate::vdfs::{filetree::build_file_system_tree_filtered, script::VdfsScript};
 
-use self::filetree::{build_file_system_tree, FileSystemNode};
+use self::{
+    filetree::{build_file_system_tree, FileSystemNode},
+    parser::parse_vdfs,
+};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -357,6 +361,7 @@ impl Vdfs {
                 FileSystemNode::File {
                     name,
                     path,
+                    data_offset: _,
                     is_last,
                     level: _,
                 } => {
@@ -499,6 +504,25 @@ impl Vdfs {
     // pub fn set_comment(&mut self, cmnt: &str) {
     //     self.header.comment(cmnt);
     // }
+
+    pub fn from_path(path: &PathBuf) -> Self {
+        let f = fs::read(path).expect("the read to be succesful");
+
+        let vdfs = parse_vdfs(
+            &f,
+            path.file_name()
+                .expect("file name to be valid")
+                .to_str()
+                .expect("to be able to convert into str"),
+        )
+        .expect("to work");
+        vdfs
+    }
+
+    pub fn print_tree(&self) {
+        let _ = print_tree(&self.fs);
+        // println!("{:?}", x)
+    }
 }
 
 fn is_on_level(filters: &Vec<Vec<String>>, search_term: &str, level: i32) -> bool {
