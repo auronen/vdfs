@@ -22,6 +22,7 @@ pub enum FileSystemNode {
 
         // for reading
         data_offset: Option<u32>,
+        data_size: usize,
 
         // for building the tree from directory
         level: i32,
@@ -62,6 +63,7 @@ impl FileSystemNode {
                     name: e.name_utf8.clone(),
                     path: PathBuf::default(), // TODO: build a path here???
                     data_offset: Some(e.next_index),
+                    data_size: e.size as usize,
                     is_last: e.is_last(),
                     level: -1,
                 });
@@ -71,6 +73,23 @@ impl FileSystemNode {
             }
         }
         children
+    }
+
+    pub fn find_node_by_name(&self, name: &str) -> Option<&FileSystemNode> {
+        match self {
+            FileSystemNode::File {
+                name: node_name, ..
+            } if node_name == name => Some(self),
+            FileSystemNode::Directory { children, .. } => {
+                for child in children {
+                    if let Some(found) = child.find_node_by_name(name) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
     }
 }
 
@@ -127,6 +146,7 @@ pub fn build_file_system_tree(path: &PathBuf, lvl: i32) -> FileSystemNode {
             name: path.file_name().unwrap().to_string_lossy().into_owned(),
             path: path.to_path_buf(),
             data_offset: None,
+            data_size: 0,
             is_last: false,
             level: lvl,
         };
@@ -178,6 +198,7 @@ pub fn _build_file_system_tree_filtered(
                 name,
                 path: path.to_path_buf(),
                 data_offset: None,
+                data_size: 0,
                 is_last: false,
                 level: lvl,
             })

@@ -91,11 +91,11 @@ mod tests {
         // let path = "/home/auronen/.GOG/Gothic-1-classic-vanilla-patch/Data/textures_Startscreen_ohne_Logo.VDF";
         // let path = "/home/auronen/.GOG/Gothic-1-classic-vanilla-patch/Data/textures_choicebox_32pixel_modialpha.VDF";
         // let path = "examples/G1_cp1250.vdf";
-        let path = "examples/G1-deNotR/g2_cz1.vdf";
+
+        // let path = "examples/G1-deNotR/g2_cz1.vdf";
         let path = "examples/G1-deNotR/g2_eng1.vdf";
         let path_buf = PathBuf::from(path);
         let f = fs::read(&path_buf).unwrap();
-
 
         let vdfs = parse_vdfs(
             &f,

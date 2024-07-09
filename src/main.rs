@@ -35,11 +35,27 @@ enum Commands {
         #[arg()]
         input: String,
     },
+    #[command(arg_required_else_help(true))]
     /// Read VDF or MOD archives
     Read {
         /// VDF or MOD archive(s) to print out their contents tree
         #[arg(value_name = "FILE(s)", value_hint = clap::ValueHint::FilePath)]
         input: Vec<std::path::PathBuf>,
+
+        /// Maximum depth of the tree view
+        #[arg(short = 'L', long)]
+        level: Option<u32>,
+    },
+    #[command(arg_required_else_help(true))]
+    /// Extract VDF or MOD archives or individual files
+    Extract {
+        /// VDF or MOD archive(s) to extract
+        #[arg(value_name = "FILE(s)", value_hint = clap::ValueHint::FilePath)]
+        input: Vec<std::path::PathBuf>,
+
+        /// File to extract
+        #[arg(short = 'f', long)]
+        file_name: String,
     },
 }
 
@@ -76,11 +92,19 @@ fn main() -> Result<()> {
                 exit(1);
             }
         }
-        Commands::Read { input } => input.iter().for_each(|input| {
+        Commands::Read { input, level } => input.iter().for_each(|input| {
             let vdfs = Vdfs::from_path(&input);
-            vdfs.print_tree();
+            vdfs.print_tree(level);
         }),
+        Commands::Extract { input, file_name } => {
+            if &input.len() > &1 {
+                eprintln!("[ERROR] Specific file extraction works only with one archive provided");
+            } else {
+                let path = &input[0];
+                let vdfs = Vdfs::from_path(path);
+                vdfs.extract_file(&file_name);
+            }
+        }
     }
-
     Ok(())
 }

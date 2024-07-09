@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{Datelike, Timelike};
 use core::fmt;
 use glob::{glob_with, MatchOptions};
-use ptree::print_tree;
+use ptree::{print_tree_with, PrintConfig};
 use std::{
     collections::VecDeque,
     fs::{self, read_to_string, File},
@@ -362,6 +362,7 @@ impl Vdfs {
                     name,
                     path,
                     data_offset: _,
+                    data_size: _,
                     is_last,
                     level: _,
                 } => {
@@ -519,9 +520,39 @@ impl Vdfs {
         vdfs
     }
 
-    pub fn print_tree(&self) {
-        let _ = print_tree(&self.fs);
+    pub fn print_tree(&self, depth: Option<u32>) {
+        let mut conf = PrintConfig::default();
+        if let Some(depth) = depth {
+            conf.depth = depth;
+        };
+        let _ = print_tree_with(&self.fs, &conf);
         // println!("{:?}", x)
+    }
+
+    pub fn extract_file(&self, file_name: &str) -> () {
+        if let Some(node) = self.fs.find_node_by_name(file_name) {
+            if let FileSystemNode::File {
+                name,
+                data_offset,
+                data_size,
+                ..
+            } = node
+            {
+                let mut file = File::create(PathBuf::from(name)).unwrap();
+                if let Some(offset) = data_offset {
+                    file.write_all(&self.data[*offset as usize..*offset as usize + data_size])
+                        .unwrap();
+                } else {
+                    eprintln!("This should be also unreachable...");
+                    exit(1);
+                }
+            } else {
+                unreachable!("This cannot happen");
+            }
+        } else {
+            eprintln!("[ERROR] Could not find file `{file_name}`");
+            exit(1);
+        }
     }
 }
 
