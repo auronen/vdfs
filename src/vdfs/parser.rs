@@ -68,7 +68,7 @@ fn parse_entry(s: &[u8]) -> IResult<&[u8], VDFSCatalogEntry> {
         VDFSCatalogEntry {
             name_utf8: CP1252.decode(name).trim().to_string(),
             name: name.try_into().expect("nom to be successful here"),
-            next_index,
+            offset: next_index,
             size,
             typ,
             attributes,

@@ -1,7 +1,8 @@
 mod vdfs;
 
 use anyhow::Result;
-use std::{path::PathBuf, process::exit};
+use memmap2::Mmap;
+use std::{fs::File, path::PathBuf, process::exit};
 
 use clap::{Parser, Subcommand};
 use vdfs::Vdfs;
@@ -92,8 +93,16 @@ fn main() -> Result<()> {
                 exit(1);
             }
         }
-        Commands::Read { input, level } => input.iter().for_each(|input| {
-            let vdfs = Vdfs::from_path(&input);
+        Commands::Read { input, level } => input.iter().for_each(|path| {
+            let file = File::open(path).expect("file to be valid");
+            let file_map = unsafe { Mmap::map(&file).unwrap() };
+            let vdfs = Vdfs::from_mmap(
+                &file_map,
+                path.file_name()
+                    .expect("file name to be valid")
+                    .to_str()
+                    .expect("to be able to convert into str"),
+            );
             vdfs.print_tree(level);
         }),
         Commands::Extract { input, file_name } => {
@@ -101,8 +110,19 @@ fn main() -> Result<()> {
                 eprintln!("[ERROR] Specific file extraction works only with one archive provided");
             } else {
                 let path = &input[0];
-                let vdfs = Vdfs::from_path(path);
-                vdfs.extract_file(&file_name);
+
+                let file = File::open(path).expect("file to be valid");
+                let file_map = unsafe { Mmap::map(&file).unwrap() };
+
+                let vdfs = Vdfs::from_mmap(
+                    &file_map,
+                    path.file_name()
+                        .expect("file name to be valid")
+                        .to_str()
+                        .expect("to be able to convert into str"),
+                );
+                // println!("{:#?}", vdfs);
+                vdfs.extract_file(&file_name, &file_map);
             }
         }
     }

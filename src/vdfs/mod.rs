@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::{Datelike, Timelike};
 use core::fmt;
 use glob::{glob_with, MatchOptions};
+use memmap2::Mmap;
 use ptree::{print_tree_with, PrintConfig};
 use std::{
     collections::VecDeque,
@@ -106,7 +107,7 @@ enum EntryType {
 pub struct VDFSCatalogEntry {
     name_utf8: String,
     name: [u8; 64],
-    next_index: u32,
+    offset: u32,
     size: u32,
     typ: u32,
     attributes: u32,
@@ -143,7 +144,7 @@ impl fmt::Display for VDFSCatalogEntry {
         let name = String::from_utf8_lossy(&self.name);
 
         writeln!(f, "Name: {}", name)?;
-        writeln!(f, "Offset: {}", self.next_index)?;
+        writeln!(f, "Offset: {}", self.offset)?;
         writeln!(f, "Size: {}", self.size)?;
 
         writeln!(f, "par_id: {}", self.parent_id)?;
@@ -159,7 +160,7 @@ impl Default for VDFSCatalogEntry {
         VDFSCatalogEntry {
             name_utf8: String::new(),
             name: [0x20; 64],
-            next_index: 0,
+            offset: 0,
             size: 0,
             typ: 0,
             attributes: 0,
@@ -412,7 +413,7 @@ impl Vdfs {
                 } => {
                     if node != &self.fs {
                         let _id = self.find_index(i as u32);
-                        self.catalog_dirs[i as usize].next_index = _id;
+                        self.catalog_dirs[i as usize].offset = _id;
 
                         for child in children {
                             queue.push_back(child);
@@ -441,8 +442,7 @@ impl Vdfs {
             .iter_mut()
             .filter(|f| f.typ == 0 || f.typ == EntryType::LastFile as u32)
             .for_each(|f| {
-                f.next_index =
-                    self.header.catalog_offset + self.header.num_files * 80 + self.curr_pos;
+                f.offset = self.header.catalog_offset + self.header.num_files * 80 + self.curr_pos;
                 self.curr_pos += f.size;
             });
     }
@@ -477,7 +477,7 @@ impl Vdfs {
 
         for c in &self.catalog_dirs {
             buf_writer.write_all(&c.name)?;
-            buf_writer.write_all(&c.next_index.to_le_bytes())?;
+            buf_writer.write_all(&c.offset.to_le_bytes())?;
             buf_writer.write_all(&c.size.to_le_bytes())?;
             buf_writer.write_all(&c.typ.to_le_bytes())?;
             buf_writer.write_all(&c.attributes.to_le_bytes())?;
@@ -506,15 +506,17 @@ impl Vdfs {
     //     self.header.comment(cmnt);
     // }
 
-    pub fn from_path(path: &PathBuf) -> Self {
-        let f = fs::read(path).expect("the read to be succesful");
+    pub fn from_mmap(map: &Mmap, file_name: &str) -> Self {
+        // let f = fs::read(path).expect("the read to be succesful");
+        // let file = File::open(path).expect("file to be valid");
+        // let file_map = unsafe { Mmap::map(&file).unwrap()  };
 
         let vdfs = parse_vdfs(
-            &f,
-            path.file_name()
-                .expect("file name to be valid")
-                .to_str()
-                .expect("to be able to convert into str"),
+            &map,
+            file_name, // path.file_name()
+                      //     .expect("file name to be valid")
+                      //     .to_str()
+                      //     .expect("to be able to convert into str"),
         )
         .expect("to work");
         vdfs
@@ -529,7 +531,7 @@ impl Vdfs {
         // println!("{:?}", x)
     }
 
-    pub fn extract_file(&self, file_name: &str) -> () {
+    pub fn extract_file(&self, file_name: &str, mmap: &Mmap) -> () {
         if let Some(node) = self.fs.find_node_by_name(file_name) {
             if let FileSystemNode::File {
                 name,
@@ -540,7 +542,7 @@ impl Vdfs {
             {
                 let mut file = File::create(PathBuf::from(name)).unwrap();
                 if let Some(offset) = data_offset {
-                    file.write_all(&self.data[*offset as usize..*offset as usize + data_size])
+                    file.write_all(&mmap[*offset as usize..*offset as usize + data_size])
                         .unwrap();
                 } else {
                     eprintln!("This should be also unreachable...");

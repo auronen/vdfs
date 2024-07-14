@@ -51,7 +51,7 @@ impl FileSystemNode {
                 children.push(FileSystemNode::Directory {
                     name: e.name_utf8.clone(),
                     path: PathBuf::default(), // TODO: build a path here???
-                    children: FileSystemNode::generate_children(entries, e.next_index as usize),
+                    children: FileSystemNode::generate_children(entries, e.offset as usize),
                     level: -1,
                     is_last: e.is_last(),
                 });
@@ -62,7 +62,7 @@ impl FileSystemNode {
                 children.push(FileSystemNode::File {
                     name: e.name_utf8.clone(),
                     path: PathBuf::default(), // TODO: build a path here???
-                    data_offset: Some(e.next_index),
+                    data_offset: Some(e.offset),
                     data_size: e.size as usize,
                     is_last: e.is_last(),
                     level: -1,
