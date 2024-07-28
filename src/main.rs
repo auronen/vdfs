@@ -17,8 +17,8 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    #[command(arg_required_else_help(true))]
     /// Create new VDF or MOD archive
+    #[command(arg_required_else_help(true))]
     Write {
         /// The base directory override
         #[arg(short = 'b', long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
@@ -36,8 +36,9 @@ enum Commands {
         #[arg()]
         input: String,
     },
-    #[command(arg_required_else_help(true))]
+
     /// Read VDF or MOD archives
+    #[command(arg_required_else_help(true))]
     Read {
         /// VDF or MOD archive(s) to print out their contents tree
         #[arg(value_name = "FILE(s)", value_hint = clap::ValueHint::FilePath)]
@@ -47,8 +48,9 @@ enum Commands {
         #[arg(short = 'L', long)]
         level: Option<u32>,
     },
-    #[command(arg_required_else_help(true))]
+
     /// Extract VDF or MOD archives or individual files
+    #[command(arg_required_else_help(true))]
     Extract {
         /// VDF or MOD archive(s) to extract
         #[arg(value_name = "FILE(s)", value_hint = clap::ValueHint::FilePath)]
@@ -121,7 +123,6 @@ fn main() -> Result<()> {
                         .to_str()
                         .expect("to be able to convert into str"),
                 );
-                // println!("{:#?}", vdfs);
                 vdfs.extract_file(&file_name, &file_map);
             }
         }

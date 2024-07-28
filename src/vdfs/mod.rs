@@ -1,26 +1,27 @@
 use anyhow::Result;
 use chrono::{Datelike, Timelike};
+use indicatif::ProgressBar;
 use core::fmt;
 use glob::{glob_with, MatchOptions};
 use memmap2::Mmap;
-use ptree::{print_tree_with, PrintConfig};
 use std::{
-    collections::VecDeque,
+    collections::BTreeMap,
     fs::{self, read_to_string, File},
     io::{BufWriter, Write},
     path::PathBuf,
     process::exit,
     time::Instant,
 };
+use tree_ds::prelude::TraversalStrategy;
 
 mod filetree;
 mod parser;
 pub mod script;
 
-use crate::vdfs::{filetree::build_file_system_tree_filtered, script::VdfsScript};
+use crate::vdfs::script::VdfsScript;
 
 use self::{
-    filetree::{build_file_system_tree, FileSystemNode},
+    filetree::{FSNode, FileSystemTree, PathTree},
     parser::parse_vdfs,
 };
 
@@ -29,8 +30,8 @@ use self::{
 pub struct VDFSHeader {
     comment: [u8; 256],
     signature: [u8; 16],
-    num_files: u32,
     num_entries: u32,
+    num_files: u32,
     timestamp: u32,
     size: u32,
     catalog_offset: u32,
@@ -44,8 +45,8 @@ impl fmt::Display for VDFSHeader {
 
         writeln!(f, "Comment: {}", comment.trim_end_matches('\u{0}'))?;
         writeln!(f, "Signature: {}", signature.trim_end_matches('\u{0}'))?;
-        writeln!(f, "Number of Files: {}", self.num_files)?;
-        writeln!(f, "Number of Entries: {}", self.num_entries)?;
+        writeln!(f, "Number of Files: {}", self.num_entries)?;
+        writeln!(f, "Number of Entries: {}", self.num_files)?;
         writeln!(f, "Timestamp: {}", self.timestamp)?;
         writeln!(f, "Size: {}", self.size)?;
         writeln!(f, "Catalog Offset: {}", self.catalog_offset)?;
@@ -75,8 +76,8 @@ impl Default for VDFSHeader {
                 0x0A, 0x0D,
             ], // PSVDSC_V2.00\n\r\n\r
             timestamp: get_current_dos_time(),
-            num_files: 0,
             num_entries: 0,
+            num_files: 0,
             size: 0,
             catalog_offset: 0,
             version: 80,
@@ -174,7 +175,8 @@ impl Default for VDFSCatalogEntry {
 #[derive(Debug)]
 pub struct Vdfs {
     pub header: VDFSHeader,
-    pub fs: FileSystemNode,
+    // pub fs: FileSystemNode,
+    pub fs: FileSystemTree,
 
     pub catalog_dirs: Vec<VDFSCatalogEntry>,
     pub data: Vec<u8>,
@@ -199,14 +201,14 @@ impl Vdfs {
     pub fn from_dir(path: &mut PathBuf) -> Self {
         let mut vdfs = Vdfs {
             header: VDFSHeader::default(),
-            fs: build_file_system_tree(path, -1),
+            // fs: build_file_system_tree(path, -1),
+            fs: FileSystemTree::build_fs_tree(path),
             catalog_dirs: Vec::new(),
             data: Vec::new(),
             curr_pos: 0,
         };
 
-        vdfs.build_catalog();
-        // bfs(&vdfs.fs);
+        vdfs.build_catalog2();
         vdfs.calculate_data_size();
         vdfs
     }
@@ -222,8 +224,6 @@ impl Vdfs {
         let yml_file = read_to_string(path).unwrap();
         let script = VdfsScript::from_yaml(&yml_file).unwrap();
 
-        // println!("{:#?}", script);
-
         if script.base_dir.as_os_str().is_empty() && base_dir_override.is_none() {
             println!(
                 "[ERROR] Empty base directory path in script file and no override was provided."
@@ -234,7 +234,7 @@ impl Vdfs {
             exit(1)
         }
 
-        let path_filter_globs: Vec<_> = script
+        let paths: Vec<_> = script
             .file_include_globs
             .iter()
             .flat_map(|g| {
@@ -246,8 +246,8 @@ impl Vdfs {
                     }),
                     case_insensitive_globify(g)
                 );
-                // println!("glob: {}", glb);
-                glob_with(
+
+                let pths = glob_with(
                     &glb,
                     MatchOptions {
                         case_sensitive: false,
@@ -255,64 +255,31 @@ impl Vdfs {
                         require_literal_leading_dot: false,
                     },
                 )
+                .expect("globs to not fail");
+
+                let paths: Vec<_> = pths.filter_map(Result::ok).collect();
+                paths
             })
             .collect();
 
-        let mut path_filter: Vec<Vec<String>> = Vec::new();
-        // println!("{:#?}", path_filter);
-
-        for paths in path_filter_globs {
-            for p in paths {
-                if let Ok(path) = p {
-                    path_filter.push({
-                        let pth = path
-                            .strip_prefix(match base_dir_override {
-                                Some(pb) => {
-                                    // let mut pb = pb.clone();
-                                    // pb.pop();
-                                    pb
-                                }
-                                None => {
-                                    // let mut bd = script.base_dir.clone();
-                                    // bd.pop();
-                                    // bd
-                                    &script.base_dir
-                                }
-                            })
-                            .unwrap();
-                        pth.iter()
-                            .map(|component| component.to_string_lossy().to_string())
-                            .collect()
-                    });
-                }
-            }
-        }
-
         let mut vdfs = Vdfs {
             header: VDFSHeader::default(),
-            fs: build_file_system_tree_filtered(
+            fs: FileSystemTree::build_file_system_tree_filtered(
                 match base_dir_override {
                     Some(pb) => pb,
                     None => &script.base_dir,
                 },
-                -1,
-                &path_filter,
+                &paths,
             ),
             catalog_dirs: Vec::new(),
             data: Vec::new(),
             curr_pos: 0,
         };
-        // println!("-------");
-        // bfs(&vdfs.fs);
-        // println!("-------");
-        // println!("{:#?}", path_filter);
 
-        vdfs.build_catalog();
+        vdfs.build_catalog2();
 
-        // bfs(&vdfs.fs);
-        // println!("{}", vdfs);
         vdfs.calculate_data_size();
-        println!("[INFO] Done: {:.2?}", time.elapsed());
+        println!("[INFO] Done generating archive: {:.2?}", time.elapsed());
         vdfs.add_comment(match comment_override {
             Some(s) => Some(s),
             None => Some(script.comment),
@@ -324,109 +291,79 @@ impl Vdfs {
         Ok(())
     }
 
-    fn build_catalog(&mut self) {
-        let mut queue = VecDeque::new();
-        queue.push_back((-1, &self.fs));
+    fn build_catalog2(&mut self) {
+        let id_cata = &self.build_index_catalog();
 
-        let mut index = -1;
-        while !queue.is_empty() {
-            let (par, node) = queue.pop_front().unwrap();
+        let pb = ProgressBar::new(self.fs.0.num_of_files() as u64);
+
+        let mut ids: Vec<(u128, bool)> = vec![(0, false); id_cata.len()];
+        for (node_id, (id, is_last)) in id_cata {
+            ids[*id] = (*node_id, *is_last);
+        }
+
+        for (node_id, last) in ids.iter().skip(1) {
+            let node = self
+                .fs
+                .0
+                .get_node_by_id(&node_id)
+                .unwrap()
+                .get_value()
+                .unwrap();
 
             match node {
-                FileSystemNode::Directory {
-                    name,
-                    path: _,
-                    is_last,
-                    children,
-                    level: _,
-                } => {
-                    if node != &self.fs {
-                        let mut e = VDFSCatalogEntry::new(name);
-                        // e.is_dir = true;
-                        e.typ |= EntryType::Dir as u32;
-                        if *is_last {
-                            e.typ |= EntryType::LastFile as u32;
-                        }
-                        e.parent_id = par;
-
-                        self.catalog_dirs.push(e);
-                        for child in children {
-                            queue.push_back((index, child));
-                        }
-                    } else {
-                        for child in children {
-                            queue.push_back((index, child));
-                        }
+                FSNode::Directory { name, .. } => {
+                    let mut e = VDFSCatalogEntry::new(&name);
+                    e.typ |= EntryType::Dir as u32;
+                    if *last {
+                        e.typ |= EntryType::LastFile as u32;
                     }
+
+                    let first_child = self
+                        .fs
+                        .0
+                        .get_node_by_id(&node_id)
+                        .unwrap()
+                        .get_children_ids()
+                        .first()
+                        .expect("directory to have at least one child")
+                        .clone();
+
+                    e.offset = id_cata
+                        .get(&first_child)
+                        .expect("the node to be in the btree map")
+                        .0 as u32
+                        - 1;
+
+                    self.catalog_dirs.push(e);
                 }
-                FileSystemNode::File {
-                    name,
-                    path,
-                    data_offset: _,
-                    data_size: _,
-                    is_last,
-                    level: _,
-                } => {
+                FSNode::File { name, path, .. } => {
                     let mut e = VDFSCatalogEntry::new_sized(
-                        name,
-                        match fs::metadata(path) {
+                        &name,
+                        match fs::metadata(&path) {
                             Ok(m) => m.len(),
                             Err(e) => {
-                                eprintln!("ERROR: {}", e);
+                                eprintln!("ERROR: {} ({})", e, path.display());
                                 exit(420);
                             }
                         },
                     );
-                    // e.is_dir = false;
-                    e.parent_id = par;
 
-                    if *is_last {
+                    if *last {
                         e.typ = EntryType::LastFile as u32;
                     }
                     self.catalog_dirs.push(e);
-                    match fs::read(path) {
-                        Ok(mut d) => self.data.append(&mut d),
+                    match fs::read(path.clone()) {
+                        Ok(mut d) => {
+                            pb.inc(1);
+                            self.data.append(&mut d)
+                        },
                         Err(e) => {
-                            eprintln!("ERROR: {}", e);
+                            eprintln!("ERROR: {} ({})", e, path.display());
                             exit(69);
                         }
                     }
                 }
             }
-            index += 1;
-        }
-
-        let mut queue = VecDeque::new();
-        queue.push_back(&self.fs);
-
-        let mut i = -1;
-        while !queue.is_empty() {
-            let node = queue.pop_front().unwrap();
-
-            match node {
-                FileSystemNode::Directory {
-                    name: _,
-                    path: _,
-                    children,
-                    is_last: _,
-                    level: _,
-                } => {
-                    if node != &self.fs {
-                        let _id = self.find_index(i as u32);
-                        self.catalog_dirs[i as usize].offset = _id;
-
-                        for child in children {
-                            queue.push_back(child);
-                        }
-                    } else {
-                        for child in children {
-                            queue.push_back(child);
-                        }
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
         }
 
         let final_num = self.catalog_dirs.len(); // + self.catalog_files.len();
@@ -445,16 +382,36 @@ impl Vdfs {
                 f.offset = self.header.catalog_offset + self.header.num_files * 80 + self.curr_pos;
                 self.curr_pos += f.size;
             });
+        pb.finish_with_message("done");
     }
 
-    fn find_index(&self, level: u32) -> u32 {
-        match self
-            .catalog_dirs
-            .iter()
-            .position(|item| item.parent_id as u32 == level)
-        {
-            Some(i) => i as u32,
-            None => 0_u32,
+    fn build_index_catalog(&mut self) -> BTreeMap<u128, (usize, bool)> {
+        let mut idxs: BTreeMap<u128, (usize, bool)> = BTreeMap::new();
+        _ = self.recurse(
+            &mut idxs,
+            &self
+                .fs
+                .0
+                .get_root_node()
+                .expect("root node should exist")
+                .get_node_id(),
+        );
+        idxs
+    }
+
+    fn recurse(&self, indx: &mut BTreeMap<u128, (usize, bool)>, node_id: &u128) {
+        let children = self
+            .fs
+            .0
+            .get_node_by_id(node_id)
+            .unwrap()
+            .get_children_ids();
+        for (i, c) in children.iter().enumerate() {
+            let id = indx.len();
+            indx.insert(*c, (id, if i == children.len() - 1 { true } else { false }));
+        }
+        for c in &children {
+            self.recurse(indx, c);
         }
     }
 
@@ -486,7 +443,7 @@ impl Vdfs {
         buf_writer.write_all(&self.data)?;
 
         buf_writer.flush()?;
-        println!("[INFO] Done: {:.2?}", time.elapsed());
+        println!("[INFO] Done writing: {:.2?}", time.elapsed());
         Ok(())
     }
 
@@ -507,68 +464,50 @@ impl Vdfs {
     // }
 
     pub fn from_mmap(map: &Mmap, file_name: &str) -> Self {
-        // let f = fs::read(path).expect("the read to be succesful");
-        // let file = File::open(path).expect("file to be valid");
-        // let file_map = unsafe { Mmap::map(&file).unwrap()  };
-
-        let vdfs = parse_vdfs(
-            &map,
-            file_name, // path.file_name()
-                      //     .expect("file name to be valid")
-                      //     .to_str()
-                      //     .expect("to be able to convert into str"),
-        )
-        .expect("to work");
-        vdfs
+        parse_vdfs(&map, file_name).expect("to work")
     }
 
-    pub fn print_tree(&self, depth: Option<u32>) {
-        let mut conf = PrintConfig::default();
-        if let Some(depth) = depth {
-            conf.depth = depth;
-        };
-        let _ = print_tree_with(&self.fs, &conf);
-        // println!("{:?}", x)
+    pub fn print_tree(&self, _depth: Option<u32>) {
+        println!("{}", self.fs.0);
     }
 
     pub fn extract_file(&self, file_name: &str, mmap: &Mmap) -> () {
-        if let Some(node) = self.fs.find_node_by_name(file_name) {
-            if let FileSystemNode::File {
+        for node_id in self
+            .fs
+            .0
+            .traverse(
+                &self.fs.0.get_root_node().unwrap().get_node_id(),
+                TraversalStrategy::InOrder,
+            )
+            .unwrap()
+            .iter()
+        {
+            if let FSNode::File {
                 name,
                 data_offset,
                 data_size,
                 ..
-            } = node
+            } = self
+                .fs
+                .0
+                .get_node_by_id(node_id)
+                .unwrap()
+                .get_value()
+                .unwrap()
             {
                 let mut file = File::create(PathBuf::from(name)).unwrap();
                 if let Some(offset) = data_offset {
-                    file.write_all(&mmap[*offset as usize..*offset as usize + data_size])
+                    file.write_all(&mmap[offset as usize..offset as usize + data_size])
                         .unwrap();
                 } else {
                     eprintln!("This should be also unreachable...");
                     exit(1);
                 }
-            } else {
-                unreachable!("This cannot happen");
             }
-        } else {
-            eprintln!("[ERROR] Could not find file `{file_name}`");
-            exit(1);
         }
+        eprintln!("[ERROR] Could not find file `{file_name}`");
+        exit(1);
     }
-}
-
-fn is_on_level(filters: &Vec<Vec<String>>, search_term: &str, level: i32) -> bool {
-    if level == -1 {
-        return true;
-    }
-    for filter in filters {
-        if filter.len() > level as usize && filter[level as usize].eq_ignore_ascii_case(search_term)
-        {
-            return true;
-        }
-    }
-    return false;
 }
 
 fn case_insensitive_globify(input: &str) -> String {
