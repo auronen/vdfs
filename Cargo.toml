@@ -16,5 +16,5 @@ serde_yaml =  "0.9"
 yore = "1.1.0"
 walkdir = "2.4.0"
 memmap2 = "0.9"
-tree-ds = { version = "0.1", features = ["auto_id"] }
+tree-ds = { version = "0.1.6", features = ["auto_id"] }
 indicatif = "0.17.8"
