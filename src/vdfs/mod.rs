@@ -1,14 +1,14 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{Datelike, Timelike};
-use indicatif::ProgressBar;
 use core::fmt;
 use glob::{glob_with, MatchOptions};
+use indicatif::ProgressBar;
 use memmap2::Mmap;
 use std::{
     collections::BTreeMap,
     fs::{self, read_to_string, File},
     io::{BufWriter, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::exit,
     time::Instant,
 };
@@ -356,7 +356,7 @@ impl Vdfs {
                         Ok(mut d) => {
                             pb.inc(1);
                             self.data.append(&mut d)
-                        },
+                        }
                         Err(e) => {
                             eprintln!("ERROR: {} ({})", e, path.display());
                             exit(69);
@@ -507,6 +507,87 @@ impl Vdfs {
         }
         eprintln!("[ERROR] Could not find file `{file_name}`");
         exit(1);
+    }
+
+    pub fn extract_all(&self, target_dir: &Path, mmap: &Mmap) -> Result<()> {
+        let start_time = Instant::now();
+
+        // Ensure the base target directory exists.
+        fs::create_dir_all(target_dir).with_context(|| {
+            format!(
+                "Failed to create target directory '{}'",
+                target_dir.display()
+            )
+        })?;
+
+        let root_id = self
+            .fs
+            .0
+            .get_root_node()
+            .context("VDFS tree has no root node")?
+            .get_node_id();
+
+        // Pre-order traversal so directories are created before files within them.
+        for node_id in self.fs.0.traverse(&root_id, TraversalStrategy::PreOrder)? {
+            if node_id == root_id {
+                continue;
+            }
+
+            let node = self.fs.0.get_node_by_id(&node_id).with_context(|| {
+                format!("Internal error: Failed to get node with ID {}", node_id)
+            })?;
+            let fs_node = node.get_value().with_context(|| {
+                format!("Internal error: Node with ID {} has no value", node_id)
+            })?;
+
+            let relative_path = match fs_node {
+                FSNode::Directory { ref path, .. } => path,
+                FSNode::File { ref path, .. } => path,
+            };
+
+            let full_disk_path = target_dir.join(relative_path);
+
+            match fs_node {
+                FSNode::Directory { .. } => {
+                    fs::create_dir_all(&full_disk_path).with_context(|| {
+                        format!("Failed to create directory '{}'", full_disk_path.display())
+                    })?;
+                }
+                FSNode::File {
+                    data_offset,
+                    data_size,
+                    ..
+                } => {
+                    // Create the file to write into.
+                    let mut file = File::create(&full_disk_path).with_context(|| {
+                        format!("Failed to create file '{}'", full_disk_path.display())
+                    })?;
+
+                    if let Some(offset) = data_offset {
+                        // Here we directly index into the memory map as in extract_file.
+                        file.write_all(&mmap[offset as usize..offset as usize + data_size])
+                            .with_context(|| {
+                                format!(
+                                    "Failed to write data to file '{}'",
+                                    full_disk_path.display()
+                                )
+                            })?;
+                    } else {
+                        // If there's no data offset but a non-zero size, log a warning.
+                        if data_size != 0 {
+                            eprintln!(
+                            "[WARN] File '{}' has size {} but no data offset in VDFS tree. Creating empty file.",
+                            relative_path.display(),
+                            data_size
+                        );
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("[INFO] Finished extraction in {:.2?}", start_time.elapsed());
+        Ok(())
     }
 }
 

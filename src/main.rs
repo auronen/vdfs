@@ -58,7 +58,17 @@ enum Commands {
 
         /// File to extract
         #[arg(short = 'f', long)]
-        file_name: String,
+        file_name: Option<String>,
+
+        /// Output directory
+        #[arg(
+            short = 'o',
+            long,
+            value_name = "DIR",
+            default_value = ".",
+            hide_default_value = true
+        )]
+        output_dir: PathBuf,
     },
 }
 
@@ -107,7 +117,11 @@ fn main() -> Result<()> {
             );
             vdfs.print_tree(level);
         }),
-        Commands::Extract { input, file_name } => {
+        Commands::Extract {
+            input,
+            file_name,
+            output_dir,
+        } => {
             if &input.len() > &1 {
                 eprintln!("[ERROR] Specific file extraction works only with one archive provided");
             } else {
@@ -123,7 +137,17 @@ fn main() -> Result<()> {
                         .to_str()
                         .expect("to be able to convert into str"),
                 );
-                vdfs.extract_file(&file_name, &file_map);
+                if let Some(file_name) = file_name {
+                    vdfs.extract_file(&file_name, &file_map);
+                } else {
+                    println!(
+                        "[INFO] Extracting {} to '{}'",
+                        path.display(),
+                        output_dir.display()
+                    );
+                    vdfs.extract_all(&output_dir, &file_map)
+                        .expect("extraction to work");
+                }
             }
         }
     }

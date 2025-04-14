@@ -1,5 +1,9 @@
 use core::fmt;
-use std::{ffi::OsStr, path::PathBuf, process::exit};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    process::exit,
+};
 use tree_ds::prelude::*;
 
 use super::VDFSCatalogEntry;
@@ -29,9 +33,16 @@ pub trait PathTree {
 
 impl PathTree for Tree<AutomatedId, FSNode> {
     fn num_of_files(&self) -> usize {
-        self.get_nodes().iter().filter(|&x| if let Some(node) = x.get_value() {
-            node.is_file()
-        } else { false }).count()
+        self.get_nodes()
+            .iter()
+            .filter(|&x| {
+                if let Some(node) = x.get_value() {
+                    node.is_file()
+                } else {
+                    false
+                }
+            })
+            .count()
     }
 
     fn add_path(&mut self, path: &PathBuf, base_dir: &PathBuf) {
@@ -159,8 +170,14 @@ impl FileSystemTree {
                 None,
             )
             .unwrap();
-        FileSystemTree::generate_children(&mut tree, entries, 0, Some(root))
-            .expect("the tree to be able to be constructed");
+        FileSystemTree::generate_children(
+            &mut tree,
+            entries,
+            0,
+            Some(root),
+            &PathBuf::default().as_path(),
+        )
+        .expect("the tree to be able to be constructed");
         FileSystemTree(tree)
     }
 
@@ -169,28 +186,31 @@ impl FileSystemTree {
         entries: &[VDFSCatalogEntry],
         starting_index: u32,
         parent: Option<u128>,
+        parent_path: &Path,
     ) -> Result<()> {
         for e in entries.iter().skip(starting_index as usize) {
             if e.is_dir() {
+                let path = parent_path.to_path_buf().join(&e.name_utf8);
                 let x = tree.add_node(
                     Node::new_with_auto_id(Some(FSNode::Directory {
                         name: e.name_utf8.clone(),
-                        path: PathBuf::default(), // TODO: build a path here???
+                        path: path.clone(), //: PathBuf::default(), // TODO: build a path here???
                         is_last: e.is_last(),
                     })),
                     parent.as_ref(),
                 )?;
 
-                FileSystemTree::generate_children(tree, entries, e.offset, Some(x))?;
+                FileSystemTree::generate_children(tree, entries, e.offset, Some(x), &path)?;
 
                 if e.is_last() {
                     return Ok(());
                 }
             } else {
+                let path = parent_path.to_path_buf().join(&e.name_utf8);
                 tree.add_node(
                     Node::new_with_auto_id(Some(FSNode::File {
                         name: e.name_utf8.clone(),
-                        path: PathBuf::default(), // TODO: build a path here???
+                        path, // : PathBuf::default(), // TODO: build a path here???
                         data_offset: Some(e.offset),
                         data_size: e.size as usize,
                         is_last: e.is_last(),
