@@ -44,6 +44,10 @@ enum Commands {
         #[arg(value_name = "FILE(s)", value_hint = clap::ValueHint::FilePath)]
         input: Vec<std::path::PathBuf>,
 
+        /// Print paths
+        #[arg(action, short = 'p', long)]
+        paths: bool,
+
         /// Maximum depth of the tree view
         #[arg(short = 'L', long)]
         level: Option<u32>,
@@ -105,7 +109,11 @@ fn main() -> Result<()> {
                 exit(1);
             }
         }
-        Commands::Read { input, level } => input.iter().for_each(|path| {
+        Commands::Read {
+            input,
+            level,
+            paths,
+        } => input.iter().for_each(|path| {
             let file = File::open(path).expect("file to be valid");
             let file_map = unsafe { Mmap::map(&file).unwrap() };
             let vdfs = Vdfs::from_mmap(
@@ -115,7 +123,11 @@ fn main() -> Result<()> {
                     .to_str()
                     .expect("to be able to convert into str"),
             );
-            vdfs.print_tree(level);
+            if paths {
+                vdfs.print_paths(level)
+            } else {
+                vdfs.print_tree(level);
+            }
         }),
         Commands::Extract {
             input,

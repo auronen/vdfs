@@ -467,6 +467,40 @@ impl Vdfs {
         parse_vdfs(&map, file_name).expect("to work")
     }
 
+    pub fn print_paths(&self, depth: Option<u32>) {
+        // prints paths as full paths inside the vdfs archive
+        // limited by maximum depth
+        let root_id = self.fs.0.get_root_node().unwrap().get_node_id();
+
+        for node_id in self
+            .fs
+            .0
+            .traverse(&root_id, TraversalStrategy::PreOrder)
+            .unwrap()
+        {
+            if node_id == root_id {
+                continue;
+            }
+
+            let node = self.fs.0.get_node_by_id(&node_id).unwrap();
+            let fs_node = node.get_value().unwrap();
+
+            // Check depth limit
+            if let Some(max_depth) = depth {
+                let current_depth = self.fs.0.get_node_depth(&node_id).unwrap();
+                if current_depth as u32 > max_depth {
+                    continue;
+                }
+            }
+
+            let FSNode::File { ref path, .. } = fs_node else {
+                continue;
+            };
+
+            println!("{}", path.display());
+        }
+    }
+
     pub fn print_tree(&self, _depth: Option<u32>) {
         println!("{}", self.fs.0);
     }
